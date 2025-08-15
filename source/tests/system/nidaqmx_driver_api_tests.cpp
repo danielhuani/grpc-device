@@ -71,6 +71,8 @@ class NiDAQmxDriverApiTests : public Test {
       : device_server_(DeviceServerInterface::Singleton()),
         nidaqmx_stub_(NiDAQmx::NewStub(device_server_->InProcessChannel()))
   {
+    // Ensure a clean server state before this suite's tests run.
+    device_server_->ResetServer();
   }
   virtual ~NiDAQmxDriverApiTests() {}
 
@@ -91,7 +93,19 @@ class NiDAQmxDriverApiTests : public Test {
 
   void TearDown() override
   {
+    // Best-effort cleanup to ensure no lingering tasks or event streams.
+    // Ignore errors from these operations; they may not be registered/running.
+    StopTaskResponse stop_resp;
+    stop_task(stop_resp);
+    unregister_every_n_samples_event(EveryNSamplesEventType::EVERY_N_SAMPLES_EVENT_TYPE_ACQUIRED_INTO_BUFFER);
+    unregister_every_n_samples_event(EveryNSamplesEventType::EVERY_N_SAMPLES_EVENT_TYPE_TRANSFERRED_FROM_BUFFER);
+    UnregisterDoneEventResponse und_resp;
+    unregister_done_event(und_resp);
+
     close_driver_session();
+
+    // Reset the in-process server to avoid cross-suite interference.
+    device_server_->ResetServer();
   }
 
   bool are_all_devices_present(std::unordered_map<std::string, std::string> required_devices)
@@ -1670,7 +1684,7 @@ TEST_F(NiDAQmxDriverApiTests, AIFiniteAcquisition_ReadWithTimeoutTooSmall_Sample
   const auto NUM_SAMPS = 60000;
   cfg_samp_clk_timing(
       create_cfg_samp_clk_timing_request(SAMPLE_RATE, Edge1::EDGE1_RISING, AcquisitionType::ACQUISITION_TYPE_FINITE_SAMPS , SAMPLES_PER_CHAN));
-  
+
   start_task();
   ReadAnalogF64Response read_response;
   read_analog_f64(NUM_SAMPS, NUM_SAMPS, TIMEOUT, read_response);
@@ -1785,7 +1799,7 @@ TEST_F(NiDAQmxDriverApiTests, Channel_RunMultipleFiniteAcquisitionsWithVaryingEv
   for (auto acquisition = 0UL; acquisition < ACQUISITION_COUNT; ++acquisition) {
     ASSERT_EQ(FINITE_SAMPLE_COUNT, N_SAMPLES[acquisition] * N_READS[acquisition]);
     ::grpc::ClientContext reader_context;
-    auto reader = register_every_n_samples_event(reader_context, N_SAMPLES[acquisition]);
+    auto reader = register_every_n_samples_event(reader_context, completion_queue, START_CALL_TAG, N_SAMPLES[acquisition]);
     reader->WaitForInitialMetadata();
     start_task();
     for (auto i = 0UL; i < N_READS[acquisition]; ++i) {
